@@ -1,0 +1,12 @@
+# Cada hora: si no hay nada nuevo, rsync no transfiere casi nada.
+# Persistent: si la PC estuvo apagada, corre apenas se prende.
+[Unit]
+Description=Traer backups de Nosotros cada hora
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

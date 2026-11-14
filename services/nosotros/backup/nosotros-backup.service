@@ -1,0 +1,9 @@
+# Servicio de usuario en TU PC (se instala en ~/.config/systemd/user/).
+[Unit]
+Description=Traer backups de Nosotros desde el servidor
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/Projects/homeserver/services/nosotros/backup/traer-backups.sh

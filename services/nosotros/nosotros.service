@@ -1,0 +1,33 @@
+# Plantilla: instalar.sh reemplaza @DESTINO@, @PUERTO@ y @USUARIO@
+# y la copia a /etc/systemd/system/nosotros.service.
+[Unit]
+Description=Nosotros (PocketBase)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USUARIO@
+Group=@USUARIO@
+WorkingDirectory=@DESTINO@
+# --automigrate=false: el esquema se cambia en el repo SJ, no desde el panel del servidor.
+ExecStart=@DESTINO@/pocketbase serve --http 0.0.0.0:@PUERTO@ --automigrate=false \
+    --dir @DESTINO@/pb_data \
+    --migrationsDir @DESTINO@/pb_migrations \
+    --publicDir @DESTINO@/pb_public
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=4096
+
+# Aislamiento: solo puede escribir en pb_data.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=@DESTINO@/pb_data
+
+[Install]
+WantedBy=multi-user.target
