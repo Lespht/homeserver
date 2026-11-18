@@ -23,7 +23,7 @@ Lo que se escribe en este README son comandos fish (tu PC) o bash (el servidor),
 
 - **Power Management → AC Recovery → Power On**: si se corta la luz, vuelve a encender solo.
 - **System Configuration → SATA Operation → AHCI**.
-- Revisá que la fecha y la hora estén bien.
+- La hora del BIOS va en **UTC**, no en hora local: en El Salvador (UTC−6) tiene que verse **6 horas adelantada**. Linux la lee como UTC y NTP la mantiene en hora sola, así que no hace falta "corregirla".
 - Este equipo no tiene UEFI, así que arranca en modo BIOS clásico. El USB de Debian funciona igual.
 
 ## 2. USB de instalación (en tu PC)
@@ -62,7 +62,7 @@ Cuando termine, sacá el USB y reiniciá. Iniciá sesión en la consola y anotá
 ip -br a        # buscá algo como 192.168.x.x en la interfaz enpXsY / eno1
 ```
 
-Si podés, reservá esa IP en el router (DHCP estático). Así no cambia y no tenés que actualizar la configuración de SSH.
+Esa IP la da el DHCP del router y **puede cambiar** (el router Nexxt no permite reservarla desde la app). Usala solo para estos primeros pasos: después del bootstrap el servidor también responde como `servidor.local`, sin importar la IP (ver [sección 6](#6-meshnet-en-el-servidor)).
 
 ## 4. Conectarte por SSH (desde tu PC)
 
@@ -115,6 +115,32 @@ nordvpn meshnet peer incoming allow <tu-celu>.nord
 - **No hagas `nordvpn connect`** en el servidor. Meshnet funciona sin conectarse a un servidor VPN, y la VPN conectada le cortaría el acceso desde la LAN.
 - Cuando Meshnet ande, podés cambiar `HostName` en `~/.ssh/config` por el nombre `*.nord` del servidor. Así entrás por SSH desde cualquier lugar.
 - El firewall sigue dejando entrar SSH desde la LAN. Es la puerta de emergencia por si Meshnet falla.
+
+### Entrada de emergencia por la LAN (`servidor.local`)
+
+El bootstrap instala `avahi-daemon`, así que en la red de casa el servidor se llama `servidor.local` aunque el router le cambie la IP. En tu PC, una sola vez:
+
+```fish
+# 1. firewall: dejar entrar las respuestas mDNS de la LAN
+sudo ufw allow from 192.168.0.0/16 to any port 5353 proto udp comment 'mdns'
+
+# 2. resolver nombres .local (avahi y nss-mdns ya vienen en CachyOS)
+sudo cp /etc/nsswitch.conf /etc/nsswitch.conf.bak
+sudo sed -i 's/^hosts: mymachines resolve/hosts: mymachines mdns_minimal [NOTFOUND=return] resolve/' /etc/nsswitch.conf
+```
+
+Y en `~/.ssh/config` (reusa la clave ya verificada por Meshnet, así no hay que aceptar una "nueva"):
+
+```ssh-config
+Host servidor-lan
+    HostName servidor.local
+    User josep
+    HostKeyAlias josep99a2-andes.nord
+```
+
+Probar: `ssh servidor-lan hostname` → `servidor`.
+
+> Si `ssh servidor` no responde, probá `ssh servidor-lan` **antes** de suponer que el servidor está caído: puede ser solo Meshnet.
 
 ## 7. Nosotros
 

@@ -4,7 +4,9 @@
 #   - actualiza el sistema y activa actualizaciones automáticas (reinicia a las 04:30 si hace falta)
 #   - SSH solo con clave (si ya copiaste tu clave; si no, avisa y no toca nada)
 #   - firewall (ufw): todo cerrado salvo SSH desde la LAN y desde Meshnet
+#   - nombre fijo en la LAN (servidor.local, vía mDNS/avahi) aunque el router cambie la IP
 #   - sin suspensión ni hibernación
+#   - watchdog de hardware: si se congela, se reinicia solo a los 30 s
 #   - muestra la salud del disco (SMART)
 #
 # Uso (en el servidor, desde tu usuario):  sudo bash bootstrap.sh
@@ -34,7 +36,7 @@ apt-get update
 apt-get -y full-upgrade
 apt-get install -y --no-install-recommends \
     unattended-upgrades apt-listchanges ufw smartmontools \
-    rsync curl ca-certificates unzip htop
+    rsync curl ca-certificates unzip htop avahi-daemon
 
 # ------------------------------------------------------------------ actualizaciones automáticas
 paso "Actualizaciones automáticas"
@@ -55,6 +57,23 @@ systemctl enable --now unattended-upgrades.service >/dev/null
 paso "Sin suspensión ni hibernación"
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1
 
+# ------------------------------------------------------------------ watchdog
+paso "Watchdog de hardware (si se congela, se reinicia solo)"
+if ls /dev/watchdog0 >/dev/null 2>&1; then
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/watchdog.conf <<'EOF'
+# Generado por homeserver/bootstrap.sh
+# Si el sistema deja de responder 30 s, el chipset lo reinicia.
+[Manager]
+RuntimeWatchdogSec=30s
+RebootWatchdogSec=10min
+EOF
+    systemctl daemon-reexec
+    echo "    Activo en $(cat /sys/class/watchdog/watchdog0/identity 2>/dev/null || echo /dev/watchdog0)"
+else
+    aviso "No hay /dev/watchdog0: este equipo no tiene watchdog de hardware. Se omite."
+fi
+
 # ------------------------------------------------------------------ SSH
 paso "SSH"
 HOME_USUARIO=$(getent passwd "$USUARIO" | cut -d: -f6)
@@ -74,11 +93,15 @@ else
 fi
 
 # ------------------------------------------------------------------ firewall
-paso "Firewall: todo cerrado salvo SSH desde la LAN y Meshnet"
+paso "Firewall: todo cerrado salvo SSH (LAN y Meshnet) y mDNS (LAN)"
 ufw default deny incoming >/dev/null
 ufw default allow outgoing >/dev/null
 for red in "${REDES_LAN[@]}" "$RANGO_MESHNET"; do
     ufw allow from "$red" to any port 22 proto tcp comment 'ssh' >/dev/null
+done
+# mDNS (servidor.local): solo desde la LAN.
+for red in "${REDES_LAN[@]}"; do
+    ufw allow from "$red" to any port 5353 proto udp comment 'mdns' >/dev/null
 done
 ufw --force enable >/dev/null
 ufw status numbered
