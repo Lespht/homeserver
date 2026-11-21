@@ -51,6 +51,10 @@ if [[ -n $DATOS_DESDE && ! -f $DATOS_DESDE/data.db ]]; then
 fi
 command -v rsync >/dev/null && command -v unzip >/dev/null || error "Faltan rsync/unzip. ¿Corriste bootstrap.sh?"
 
+# Se mira antes de importar o migrar: decide si al final se avisa de crear el superusuario.
+HABIA_DATOS=0
+[[ -f $DATOS/data.db ]] && HABIA_DATOS=1
+
 # ------------------------------------------------------------------ usuario y carpetas
 if ! id "$USUARIO_SRV" &>/dev/null; then
     paso "Creando usuario de sistema '$USUARIO_SRV'"
@@ -101,7 +105,35 @@ if [[ -n $DATOS_DESDE ]]; then
 fi
 chown -R "$USUARIO_SRV:$USUARIO_SRV" "$DATOS"
 
+# ------------------------------------------------------------------ copia antes de migrar
+# El servicio ya está detenido, así que copiar el archivo es seguro. Las fotos no se
+# copian: las migraciones no las tocan. Se guardan las últimas $COPIAS_A_GUARDAR.
+# Van fuera de pb_data para que no entren en los backups zip de PocketBase.
+COPIAS_A_GUARDAR=5
+ANTES_MIGRAR="$DESTINO/antes-migrar"
+if [[ -f $DATOS/data.db ]]; then
+    COPIA="$ANTES_MIGRAR/data-$(date +%Y%m%d-%H%M%S).db"
+    paso "Copiando la base antes de migrar"
+    install -d -m 0750 -o "$USUARIO_SRV" -g "$USUARIO_SRV" "$ANTES_MIGRAR"
+    for sufijo in "" -wal -shm; do
+        [[ -f $DATOS/data.db$sufijo ]] || continue
+        install -m 0640 -o "$USUARIO_SRV" -g "$USUARIO_SRV" "$DATOS/data.db$sufijo" "$COPIA$sufijo"
+    done
+    echo "    Copia en $COPIA"
+    shopt -s nullglob
+    copias=("$ANTES_MIGRAR"/data-*.db)     # orden alfabético = cronológico
+    shopt -u nullglob
+    if (( ${#copias[@]} > COPIAS_A_GUARDAR )); then
+        for vieja in "${copias[@]:0:${#copias[@]}-COPIAS_A_GUARDAR}"; do
+            rm -f -- "$vieja" "$vieja-wal" "$vieja-shm"
+        done
+    fi
+fi
+
 paso "Aplicando migraciones"
+# Desde un directorio al que el usuario del servicio pueda entrar (si no, avisa
+# "Failed to retrieve the current working directory").
+cd "$DESTINO"
 runuser -u "$USUARIO_SRV" -- "$EXE" migrate up --dir "$DATOS" --migrationsDir "$DESTINO/pb_migrations"
 
 # ------------------------------------------------------------------ servicio
@@ -132,8 +164,13 @@ else
     aviso "Meshnet todavía no está activo: la app solo responde en este equipo."
 fi
 echo "  Logs:   journalctl -u nosotros -f"
-if [[ -z $DATOS_DESDE ]]; then
+if [[ $HABIA_DATOS == 0 && -z $DATOS_DESDE ]]; then
     echo
-    echo "Si es una instalación nueva (sin datos importados), creá el superusuario con:"
+    echo "Instalación nueva: falta crear el superusuario. Desde el panel (recomendado):"
+    echo "  PocketBase deja en el log un enlace de instalación de un solo uso:"
+    echo "    journalctl -u nosotros | grep pbinstal"
+    echo "  Abrilo cambiando 127.0.0.1 por ${IP_MESH:-la IP de Meshnet del servidor} y creá el usuario ahí."
+    echo "  Si el enlace venció, 'sudo systemctl restart nosotros' genera uno nuevo."
+    echo "Alternativa por consola (la contraseña queda en el historial del shell):"
     echo "  sudo -u $USUARIO_SRV $EXE superuser upsert TU_EMAIL 'TU_CONTRASEÑA' --dir $DATOS"
 fi

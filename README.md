@@ -176,6 +176,26 @@ sudo bash homeserver/services/nosotros/instalar.sh --desinstalar   # no borra /s
 > El esquema de la base se cambia en el repo SJ (`pb_migrations`), no desde el panel del servidor.
 > El servicio corre con `--automigrate=false`.
 
+### Copia antes de migrar
+
+Antes de aplicar migraciones, `instalar.sh` copia la base (sin fotos) a
+`/srv/nosotros/antes-migrar/data-AAAAMMDD-HHMMSS.db` y guarda las últimas 5.
+Están fuera de `pb_data`, así que no entran en los backups diarios (sección 8).
+Si una migración sale mal, para volver atrás:
+
+```bash
+sudo systemctl stop nosotros
+cd /srv/nosotros
+sudo rm -f pb_data/data.db-wal pb_data/data.db-shm
+sudo cp -p antes-migrar/data-AAAAMMDD-HHMMSS.db pb_data/data.db
+# si la copia tiene -wal/-shm al lado, copialos también:
+#   sudo cp -p antes-migrar/data-AAAAMMDD-HHMMSS.db-wal pb_data/data.db-wal   (ídem -shm)
+sudo systemctl start nosotros
+```
+
+> Ojo: la próxima vez que corra `deploy.sh`, las migraciones se vuelven a aplicar.
+> Corregí primero la migración en el repo SJ.
+
 ## 8. Backups
 
 Dos copias: el **servidor** genera un zip diario (base + fotos) y tu **PC** lo trae por Meshnet.
