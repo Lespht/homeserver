@@ -13,6 +13,9 @@
 	tls {
 		dns duckdns {env.DUCKDNS_TOKEN}
 	}
+	# /api/avisos/* solo lo usa el servicio de avisos por localhost: desde afuera no existe.
+	respond /api/avisos* 404
+
 	# Caddy no limita el tamaño del cuerpo por defecto (fotos).
 	# flush_interval -1: sin buffering, para el tiempo real (SSE en /api/realtime).
 	reverse_proxy 127.0.0.1:8090 {

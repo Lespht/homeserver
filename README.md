@@ -11,7 +11,8 @@ homeserver/
     └── nosotros/             app de pareja (repo ~/Projects/SJ)
         ├── deploy.sh         ← se corre desde TU PC
         ├── instalar.sh       ← lo ejecuta deploy.sh en el servidor
-        ├── nosotros.service  plantilla systemd
+        ├── nosotros.service  plantilla systemd (PocketBase)
+        ├── nosotros-avisos.service  plantilla systemd (avisos push)
         ├── caddy/            HTTPS: Caddyfile + servicio (DuckDNS, solo Meshnet)
         └── backup/           ← timer en TU PC que trae los backups del servidor
 ```
@@ -151,7 +152,7 @@ Desde tu PC:
 # primera vez, llevando fotos/usuarios/mensajes del servidor de prueba:
 ~/Projects/homeserver/services/nosotros/deploy.sh --con-datos
 
-# actualizaciones posteriores (frontend o migraciones nuevas):
+# actualizaciones posteriores (frontend, migraciones, hooks o avisos):
 ~/Projects/homeserver/services/nosotros/deploy.sh
 ```
 
@@ -159,11 +160,12 @@ Desde tu PC:
 
 `deploy.sh` hace todo esto:
 1. Compila `SJ/web` y, si hace falta, Caddy (xcaddy).
-2. Sube el frontend, las migraciones y Caddy.
+2. Sube el frontend, las migraciones, los hooks, el servicio de avisos (ver [Avisos push](#avisos-push)) y Caddy.
 3. En el servidor, `instalar.sh`:
    - descarga PocketBase y verifica el SHA-256,
    - crea el usuario de sistema `nosotros`,
    - instala el servicio en `/srv/nosotros`, escuchando **solo en 127.0.0.1:8090**,
+   - instala Node y el servicio `nosotros-avisos`, escuchando **solo en 127.0.0.1:8091**,
    - instala Caddy delante, con HTTPS en el 443 abierto **solo para Meshnet**.
 
 Con Meshnet activo, la app queda en `https://<subdominio>.duckdns.org` y el panel admin en `/_/`.
@@ -173,7 +175,7 @@ Con Meshnet activo, la app queda en `https://<subdominio>.duckdns.org` y el pane
 ```bash
 systemctl status nosotros
 journalctl -u nosotros -f
-sudo bash homeserver/services/nosotros/instalar.sh --desinstalar   # no borra /srv/nosotros/pb_data
+sudo bash homeserver/services/nosotros/instalar.sh --desinstalar   # no borra /srv/nosotros/pb_data ni las claves
 ```
 
 > El esquema de la base se cambia en el repo SJ (`pb_migrations`), no desde el panel del servidor.
@@ -239,6 +241,52 @@ así que sigue sin haber nada expuesto a internet. El 443 queda abierto solo par
 - Actualizar Caddy: cambiá `CADDY_VERSION` / `DUCKDNS_VERSION` en `deploy.sh` y volvé a correrlo.
   (No uses `caddy upgrade`: depende del servidor de builds de caddyserver.com, que ahora pide cuenta.)
 - Logs: `journalctl -u caddy -f`.
+
+### Avisos push
+
+Las notificaciones las mandan dos piezas del repo SJ:
+- los **hooks** de PocketBase (`server/pb_hooks`), que le piden mandar avisos,
+- el **servicio de avisos** (`avisos/`, Node), que habla con Google y Apple.
+
+El servicio:
+- escucha solo en 127.0.0.1:8091 y no abre puertos de entrada (solo sale por HTTPS);
+- corre con un usuario efímero (`DynamicUser`), así no puede leer `pb_data`;
+- usa Node fijo en `/opt/node-v…`, que `instalar.sh` baja y verifica con SHA-256. Para actualizarlo, cambiá `NODE_VERSION` y `NODE_SHA256`.
+
+Las dependencias (solo `web-push`) se resuelven en tu PC desde el lockfile y se suben ya instaladas.
+
+**Claves.** Son las de `~/Projects/SJ/avisos/.env` en tu PC. La pública va compilada en la app, así que **no generes otras**.
+- La primera vez, `deploy.sh` ve que el servidor no las tiene y las sube solo. Para reemplazarlas: `deploy.sh --claves`.
+- En el servidor quedan en `/etc/nosotros/avisos.env` (root, 0600; systemd se las pasa al servicio).
+- PocketBase recibe solo la clave compartida (`/etc/nosotros/pocketbase.env`).
+- Un deploy normal no las toca. Nunca les hagas `cat`.
+
+`/api/avisos/*` es solo para el servicio de avisos por localhost: Caddy lo responde 404 desde afuera.
+
+Logs, en el servidor:
+
+```bash
+journalctl -u nosotros-avisos -f      # envíos y errores con Google/Apple
+journalctl -u nosotros -f             # hooks
+```
+
+Probar, primero en el servidor (`instalar.sh` ya hace estas comprobaciones al final):
+
+```bash
+systemctl status nosotros-avisos                                                                  # active (running)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8091/enviar                     # 401
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8090/api/avisos/vencidas        # 401 (404 = no cargaron los hooks)
+```
+
+Desde un celular con Meshnet, `https://<subdominio>.duckdns.org/api/avisos/vencidas` → 404 (lo corta Caddy).
+
+Después, con los dos celulares (en iPhone, con la app agregada a la pantalla de inicio):
+1. Perfil → Ajustes → Notificaciones → **Activar**, en los dos.
+2. Uno manda un mensaje: al otro le llega el aviso, y al tocarlo se abre Mensajes.
+3. Dos mensajes seguidos: llegan los dos y el segundo no vibra.
+4. Al abrir Mensajes, esos avisos se borran.
+
+El recordatorio de planes del día llega a las 9:00 de El Salvador (cron de los hooks, 15:00 UTC).
 
 ## 8. Backups
 

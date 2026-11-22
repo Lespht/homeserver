@@ -1,0 +1,32 @@
+# Plantilla: instalar.sh reemplaza @CODIGO@, @NODE@ y @CLAVES@
+# y la copia a /etc/systemd/system/nosotros-avisos.service.
+# Servicio de avisos push (repo SJ, carpeta avisos/): escucha solo en 127.0.0.1:8091.
+[Unit]
+Description=Nosotros (avisos push)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Usuario efímero: no puede leer pb_data, y PocketBase no puede leer la clave privada VAPID.
+DynamicUser=yes
+WorkingDirectory=@CODIGO@
+# systemd lo lee como root antes de bajar privilegios: el archivo es root:root 0600.
+EnvironmentFile=@CLAVES@
+Environment=NODE_ENV=production
+ExecStart=@NODE@ src/main.ts
+Restart=on-failure
+RestartSec=5
+
+# Aislamiento: igual que nosotros.service, pero sin nada escribible.
+# (Sin MemoryDenyWriteExecute: el JIT de V8 lo necesita.)
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-# Plantilla: instalar.sh reemplaza @DESTINO@, @PUERTO@ y @USUARIO@
+# Plantilla: instalar.sh reemplaza @DESTINO@, @PUERTO@, @USUARIO@ y @ENV_PB@
 # y la copia a /etc/systemd/system/nosotros.service.
 [Unit]
 Description=Nosotros (PocketBase)
@@ -9,11 +9,14 @@ Wants=network-online.target
 User=@USUARIO@
 Group=@USUARIO@
 WorkingDirectory=@DESTINO@
+# Solo AVISOS_SECRETO (para los hooks de avisos). systemd lo lee como root: root:root 0600.
+EnvironmentFile=@ENV_PB@
 # --automigrate=false: el esquema se cambia en el repo SJ, no desde el panel del servidor.
 ExecStart=@DESTINO@/pocketbase serve --http 127.0.0.1:@PUERTO@ --automigrate=false \
     --dir @DESTINO@/pb_data \
     --migrationsDir @DESTINO@/pb_migrations \
-    --publicDir @DESTINO@/pb_public
+    --publicDir @DESTINO@/pb_public \
+    --hooksDir @DESTINO@/pb_hooks
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=4096
