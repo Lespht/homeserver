@@ -16,11 +16,15 @@ PUERTO=8090
 DESTINO="/srv/nosotros"
 USUARIO_SRV="nosotros"
 RANGO_MESHNET="100.64.0.0/10"
+# HTTPS (Caddy con el plugin de DuckDNS). El token y el dominio los cargás a mano: ver README.
+CADDY_EXE="/usr/local/bin/caddy"
+CADDY_ENV="/etc/caddy/duckdns.env"
 
 AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$AQUI/app"            # lo llena deploy.sh: pb_public/ y pb_migrations/
 EXE="$DESTINO/pocketbase"
 DATOS="$DESTINO/pb_data"
+CADDY_NUEVO="$AQUI/caddy/bin/caddy"    # lo compila y sube deploy.sh
 
 paso()  { printf '\n\e[1;36m==> %s\e[0m\n' "$*"; }
 aviso() { printf '\e[1;33m    %s\e[0m\n' "$*"; }
@@ -38,7 +42,13 @@ case "${1:-}" in
         rm -f /etc/systemd/system/nosotros.service
         systemctl daemon-reload
         ufw delete allow from "$RANGO_MESHNET" to any port "$PUERTO" proto tcp >/dev/null 2>&1 || true
+        paso "Quitando Caddy y su regla de firewall"
+        systemctl disable --now caddy.service 2>/dev/null || true
+        rm -f /etc/systemd/system/caddy.service "$CADDY_EXE" /etc/caddy/Caddyfile
+        systemctl daemon-reload
+        ufw delete allow from "$RANGO_MESHNET" to any port 443 proto tcp >/dev/null 2>&1 || true
         echo "Listo. Los archivos en $DESTINO (incluidos los datos) se mantienen."
+        echo "También quedan $CADDY_ENV y los certificados en /var/lib/caddy."
         exit 0 ;;
     *) error "Opción desconocida: $1" ;;
 esac
@@ -50,6 +60,12 @@ if [[ -n $DATOS_DESDE && ! -f $DATOS_DESDE/data.db ]]; then
     error "No hay data.db en '$DATOS_DESDE'."
 fi
 command -v rsync >/dev/null && command -v unzip >/dev/null || error "Faltan rsync/unzip. ¿Corriste bootstrap.sh?"
+# HTTPS es la única entrada (PocketBase solo escucha en localhost): sin token no se sigue.
+[[ -f $CADDY_ENV ]] || error "Falta $CADDY_ENV (dominio y token de DuckDNS). Ver README, sección HTTPS."
+# Solo se lee el dominio; el token no pasa por este script.
+DOMINIO="$(sed -n 's/^DOMINIO=//p' "$CADDY_ENV" | head -n1)"
+[[ -n $DOMINIO ]] || error "$CADDY_ENV no tiene la línea DOMINIO=..."
+[[ -f $CADDY_NUEVO ]] || error "No existe $CADDY_NUEVO. Usá deploy.sh desde tu PC."
 
 # Se mira antes de importar o migrar: decide si al final se avisa de crear el superusuario.
 HABIA_DATOS=0
@@ -144,8 +160,8 @@ systemctl daemon-reload
 systemctl enable --now nosotros.service >/dev/null 2>&1
 
 # ------------------------------------------------------------------ firewall
-paso "Firewall: puerto $PUERTO solo desde Meshnet ($RANGO_MESHNET)"
-ufw allow from "$RANGO_MESHNET" to any port "$PUERTO" proto tcp comment 'nosotros' >/dev/null
+# PocketBase solo escucha en 127.0.0.1: se entra por HTTPS (Caddy). Se quita la regla vieja del 8090.
+ufw delete allow from "$RANGO_MESHNET" to any port "$PUERTO" proto tcp >/dev/null 2>&1 || true
 
 # ------------------------------------------------------------------ comprobación
 paso "Comprobando que responde"
@@ -155,21 +171,59 @@ for _ in $(seq 15); do
 done
 [[ ${OK:-0} == 1 ]] || error "PocketBase no responde. Mirá los logs: journalctl -u nosotros -e"
 
-IP_MESH="$(ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep '^100\.' | head -n1 || true)"
-printf '\n\e[1;32mListo! Nosotros corre y arranca solo con el sistema.\e[0m\n'
-if [[ -n $IP_MESH ]]; then
-    echo "  App:    http://$IP_MESH:$PUERTO"
-    echo "  Panel:  http://$IP_MESH:$PUERTO/_/"
-else
-    aviso "Meshnet todavía no está activo: la app solo responde en este equipo."
+# ------------------------------------------------------------------ HTTPS (Caddy)
+chown root:root "$CADDY_ENV"; chmod 0600 "$CADDY_ENV"
+
+if ! id caddy &>/dev/null; then
+    paso "Creando usuario de sistema 'caddy'"
+    useradd --system --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
 fi
-echo "  Logs:   journalctl -u nosotros -f"
+
+if [[ -x $CADDY_EXE ]] && cmp -s "$CADDY_NUEVO" "$CADDY_EXE"; then
+    paso "Caddy ya instalado ($("$CADDY_EXE" version | awk '{print $1}'))"
+else
+    paso "Instalando Caddy"
+    chmod 0755 "$CADDY_NUEVO"
+    "$CADDY_NUEVO" list-modules | grep -qx 'dns.providers.duckdns' \
+        || error "El binario subido no trae dns.providers.duckdns."
+    install -m 0755 "$CADDY_NUEVO" "$CADDY_EXE"
+    echo "    $("$CADDY_EXE" version | awk '{print $1}')"
+fi
+
+paso "Configurando Caddy para $DOMINIO"
+install -D -m 0644 "$AQUI/caddy/Caddyfile" /etc/caddy/Caddyfile
+install -m 0644 "$AQUI/caddy/caddy.service" /etc/systemd/system/caddy.service
+if ! SALIDA="$("$CADDY_EXE" validate --config /etc/caddy/Caddyfile --adapter caddyfile --envfile "$CADDY_ENV" 2>&1)"; then
+    printf '%s\n' "$SALIDA" | tail -n 5 >&2
+    error "El Caddyfile no es válido."
+fi
+systemctl daemon-reload
+systemctl enable caddy.service >/dev/null 2>&1
+systemctl restart caddy.service
+
+paso "Firewall: puerto 443 solo desde Meshnet ($RANGO_MESHNET)"
+ufw allow from "$RANGO_MESHNET" to any port 443 proto tcp comment 'nosotros https' >/dev/null
+
+paso "Comprobando HTTPS (la primera vez sacar el certificado puede tardar un par de minutos)"
+OK_HTTPS=0
+for _ in $(seq 60); do
+    if curl -fsS --resolve "$DOMINIO:443:127.0.0.1" "https://$DOMINIO/api/health" >/dev/null 2>&1; then
+        OK_HTTPS=1; break
+    fi
+    sleep 3
+done
+(( OK_HTTPS )) || aviso "HTTPS todavía no responde. Mirá los logs: journalctl -u caddy -e"
+
+printf '\n\e[1;32mListo! Nosotros corre y arranca solo con el sistema.\e[0m\n'
+echo "  App:    https://$DOMINIO   (solo con Meshnet activo)"
+echo "  Panel:  https://$DOMINIO/_/"
+echo "  Logs:   journalctl -u nosotros -f   ·   journalctl -u caddy -f"
 if [[ $HABIA_DATOS == 0 && -z $DATOS_DESDE ]]; then
     echo
     echo "Instalación nueva: falta crear el superusuario. Desde el panel (recomendado):"
     echo "  PocketBase deja en el log un enlace de instalación de un solo uso:"
     echo "    journalctl -u nosotros | grep pbinstal"
-    echo "  Abrilo cambiando 127.0.0.1 por ${IP_MESH:-la IP de Meshnet del servidor} y creá el usuario ahí."
+    echo "  Abrilo cambiando http://127.0.0.1:$PUERTO por https://$DOMINIO y creá el usuario ahí."
     echo "  Si el enlace venció, 'sudo systemctl restart nosotros' genera uno nuevo."
     echo "Alternativa por consola (la contraseña queda en el historial del shell):"
     echo "  sudo -u $USUARIO_SRV $EXE superuser upsert TU_EMAIL 'TU_CONTRASEÑA' --dir $DATOS"

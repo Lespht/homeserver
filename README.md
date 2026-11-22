@@ -12,6 +12,7 @@ homeserver/
         ├── deploy.sh         ← se corre desde TU PC
         ├── instalar.sh       ← lo ejecuta deploy.sh en el servidor
         ├── nosotros.service  plantilla systemd
+        ├── caddy/            HTTPS: Caddyfile + servicio (DuckDNS, solo Meshnet)
         └── backup/           ← timer en TU PC que trae los backups del servidor
 ```
 
@@ -154,16 +155,18 @@ Desde tu PC:
 ~/Projects/homeserver/services/nosotros/deploy.sh
 ```
 
+> Antes del primer deploy, hacé los pasos 1–3 de [HTTPS](#https-duckdns--caddy): sin `/etc/caddy/duckdns.env` no instala.
+
 `deploy.sh` hace todo esto:
-1. Compila `SJ/web`.
-2. Sube el frontend y las migraciones.
+1. Compila `SJ/web` y, si hace falta, Caddy (xcaddy).
+2. Sube el frontend, las migraciones y Caddy.
 3. En el servidor, `instalar.sh`:
    - descarga PocketBase y verifica el SHA-256,
    - crea el usuario de sistema `nosotros`,
-   - instala el servicio en `/srv/nosotros`,
-   - abre el puerto 8090 **solo para Meshnet**.
+   - instala el servicio en `/srv/nosotros`, escuchando **solo en 127.0.0.1:8090**,
+   - instala Caddy delante, con HTTPS en el 443 abierto **solo para Meshnet**.
 
-Con Meshnet activo, la app queda en `http://<servidor>.nord:8090` y el panel admin en `/_/`.
+Con Meshnet activo, la app queda en `https://<subdominio>.duckdns.org` y el panel admin en `/_/`.
 
 Útil en el servidor:
 
@@ -196,13 +199,54 @@ sudo systemctl start nosotros
 > Ojo: la próxima vez que corra `deploy.sh`, las migraciones se vuelven a aplicar.
 > Corregí primero la migración en el repo SJ.
 
+### HTTPS (DuckDNS + Caddy)
+
+Las notificaciones push y la cámara del celular piden HTTPS con certificado válido.
+Caddy saca el certificado de Let's Encrypt por DNS-01 con DuckDNS. El dominio apunta a la IP de Meshnet,
+así que sigue sin haber nada expuesto a internet. El 443 queda abierto solo para Meshnet.
+
+1. En <https://www.duckdns.org> entrá y creá un subdominio (ej. `TUSUB`).
+2. **En el servidor**, cargá dominio y token (el token no se ve en pantalla):
+
+   ```bash
+   read -rsp 'Token DuckDNS: ' T; echo
+   printf 'DOMINIO=%s\nDUCKDNS_TOKEN=%s\n' 'TUSUB.duckdns.org' "$T" \
+     | sudo install -D -m 0600 -o root -g root /dev/stdin /etc/caddy/duckdns.env
+   unset T
+   ```
+
+3. **En el servidor**, apuntá el registro A a la IP de Meshnet (`nordvpn meshnet peer list` → la tuya, 100.x).
+   El token sale del archivo y va por stdin, así no queda en pantalla ni en `ps`. Tiene que responder `OK`:
+
+   ```bash
+   sudo bash -c 'source /etc/caddy/duckdns.env; printf "url = \"https://www.duckdns.org/update?domains=%s&token=%s&ip=%s\"\n" "${DOMINIO%%.*}" "$DUCKDNS_TOKEN" 100.87.128.22 | curl -s -K -'; echo
+   ```
+
+   Se hace una sola vez: la IP de Meshnet no cambia.
+4. **En tu PC**: `~/Projects/homeserver/services/nosotros/deploy.sh`. Compila Caddy con el plugin de DuckDNS
+   (xcaddy, necesita Go en tu PC), lo instala, saca el certificado y comprueba que responda.
+5. Probar (con Meshnet activo):
+
+   ```fish
+   dig +short TUSUB.duckdns.org                          # → 100.x
+   curl -sI https://TUSUB.duckdns.org | head -n1          # → HTTP/2 200
+   curl -N https://TUSUB.duckdns.org/api/realtime         # → PB_CONNECT al instante (Ctrl+C)
+   ```
+
+   En los celulares: abre con candado, login, subir una foto y el chat en tiempo real. Con Meshnet apagado, no responde.
+
+- Si dentro de casa el dominio no resuelve, puede ser que el router bloquee las respuestas DNS con IPs privadas ("DNS rebinding").
+- Actualizar Caddy: cambiá `CADDY_VERSION` / `DUCKDNS_VERSION` en `deploy.sh` y volvé a correrlo.
+  (No uses `caddy upgrade`: depende del servidor de builds de caddyserver.com, que ahora pide cuenta.)
+- Logs: `journalctl -u caddy -f`.
+
 ## 8. Backups
 
 Dos copias: el **servidor** genera un zip diario (base + fotos) y tu **PC** lo trae por Meshnet.
 
 **En el servidor**, una sola vez:
 
-1. Panel (`http://<servidor>.nord:8090/_/`) → Settings → Backups:
+1. Panel (`https://<subdominio>.duckdns.org/_/`) → Settings → Backups:
    - **Auto backups** activado, cron `0 8 * * *` (va en **UTC**: 2 AM en CST; evitá las 04:30, que es cuando puede reiniciarse por actualizaciones),
    - **Max auto backups**: `7`.
 2. Darle a tu usuario permiso de lectura (los datos son del usuario `nosotros`):

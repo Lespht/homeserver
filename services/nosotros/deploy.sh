@@ -29,6 +29,24 @@ esac
 paso "Compilando el frontend"
 ( cd "$SJ/web" && pnpm build )
 
+# Caddy con el plugin de DuckDNS, compilado acá con xcaddy (la vía oficial para plugins;
+# el servidor de builds de caddyserver.com es solo para descargas a mano).
+# Para actualizar: subí estas versiones y volvé a correr deploy.sh.
+CADDY_VERSION="v2.11.9"
+DUCKDNS_VERSION="v0.5.0"
+XCADDY_VERSION="v0.4.7"
+CADDY_BIN="$REPO/services/nosotros/caddy/bin/caddy"     # ignorado por git
+if ! { [[ -x $CADDY_BIN ]] \
+       && "$CADDY_BIN" version | grep -q "^$CADDY_VERSION " \
+       && "$CADDY_BIN" list-modules --versions | grep -qx "dns.providers.duckdns $DUCKDNS_VERSION"; }; then
+    command -v go >/dev/null || { echo "Falta Go para compilar Caddy (pacman -S go)." >&2; exit 1; }
+    paso "Compilando Caddy $CADDY_VERSION + duckdns $DUCKDNS_VERSION"
+    mkdir -p "$(dirname "$CADDY_BIN")"
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+        go run "github.com/caddyserver/xcaddy/cmd/xcaddy@$XCADDY_VERSION" build "$CADDY_VERSION" \
+        --with "github.com/caddy-dns/duckdns@$DUCKDNS_VERSION" --output "$CADDY_BIN"
+fi
+
 paso "Subiendo scripts y app a $HOST:~/$REMOTO"
 rsync -az --delete --exclude .git --exclude 'services/nosotros/app/' "$REPO/" "$HOST:$REMOTO/"
 ssh "$HOST" "mkdir -p $APP"
